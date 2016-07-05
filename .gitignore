@@ -1,0 +1,11 @@
+data
+snapshots
+summary
+results
+*.tgz
+*.zip
+*.tar.gz
+*.pkl
+*.npy
+*.txt
+*.pyc
