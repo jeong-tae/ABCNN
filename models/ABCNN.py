@@ -2,7 +2,7 @@ import random
 import numpy as np
 import tensorflow as tf
 import math
-
+from tqdm import tqdm
 from .util import word2vec_load, Progress
 
 
@@ -47,11 +47,10 @@ class ABCNN_TE(object):
         self.input_querys = tf.placeholder(tf.float32, [self.batch_size, self.max_words, self.edim])
         self.input_episodes = tf.placeholder(tf.float32, [self.batch_size, self.epi_size, self.max_words, self.edim])
 
-        self.input_answers = tf.placeholder(tf.float32, [self.batch_size, 1])
+        self.input_answers = tf.placeholder(tf.int32, [self.batch_size, 1])
         # 1 for answer index which range in (0, 4)
         self.input_candidates = tf.placeholder(tf.float32, [self.batch_size, 4, self.max_words, self.edim])
-
-        self.keep_prob = tf.placeholder('float')
+        self.negative_idx = tf.placeholder(tf.int32, [self.batch_size, 1])
 
     def build_model(self):
         print(" [*] building...")
@@ -69,14 +68,14 @@ class ABCNN_TE(object):
             return length
         with tf.variable_scope("Sentence_CNN"):
             self.W1 = tf.get_variable('CNN_weights', [self.d_1, self.filter_width1 * self.edim], initializer = tf.random_normal_initializer(0, stddev = self.init_std))
-            self.b1 = tf.get_variable('CNN_biases', [self.d_1], stddev = self.init_std, initializer = tf.random_normal_initializer(0, stddev = self.init_std))
+            self.b1 = tf.get_variable('CNN_biases', [self.d_1], initializer = tf.random_normal_initializer(0, stddev = self.init_std))
 
-        def wide_CNN(self, data, w, l, scope):
+        def wide_CNN(data, w, l, scope):
             feature_map = []
-            padded_data = tf.pad(data, [[0, 0], [math.floor(w/2), math.ceil(w/2)], [0, 0]], "CONSTANT")
+            padded_data = tf.pad(data, [[0, 0], [int(math.floor(w/2)), int(math.ceil(w/2))], [0, 0]], "CONSTANT")
             with tf.variable_scope(scope, reuse = True):
-                weights = get_variable('CNN_weights')
-                biases = get_variable('CNN_biases')
+                weights = tf.get_variable('CNN_weights')
+                biases = tf.get_variable('CNN_biases')
                 for t in range(w-1, l+w):
                     c_i = tf.reshape(padded_data[:, t-w+1:t+1, :], [self.batch_size, -1])
                     p_i = tf.tanh(tf.matmul(c_i, tf.transpose(weights)) + biases)
@@ -91,7 +90,7 @@ class ABCNN_TE(object):
         sentences_CNN_c = []
         for n in range(4):
             sentence = self.input_candidates[:, n, :, :]
-            sentence_CNN_c = wide_CNN(sentence_in, self.filter_width1, self.max_words, 'Sentence_CNN')
+            sentence_CNN_c = wide_CNN(sentence, self.filter_width1, self.max_words, 'Sentence_CNN')
             sentence_CNN_c = tf.reshape(sentence_CNN_c, [self.batch_size, 1, -1, self.d_1])
             sentences_CNN_c.append(sentence_CNN_c)
         sentences_CNN_c = tf.concat(1, sentences_CNN_c)
@@ -102,6 +101,7 @@ class ABCNN_TE(object):
             sentence_CNN_d = wide_CNN(sentence, self.filter_width1, self.max_words, 'Sentence_CNN')
             sentence_CNN_d = tf.reshape(sentence_CNN_d, [self.batch_size, 1, -1, self.d_1])
             sentences_CNN_d.append(sentence_CNN_d)
+        #pdb.set_trace()
         sentences_CNN_d = tf.concat(1, sentences_CNN_d)
         #################### End of Sentence-CNN #################
 
@@ -129,7 +129,7 @@ class ABCNN_TE(object):
         top_sq = tf.nn.top_k(tf.reshape(sq_attention, [self.batch_size, -1]), k = 1)[1]
         top_sc = tf.nn.top_k(sc_attention, k = 1)[1]
 
-        def index2d_to_2dtensor(self, index2d, batch_size, length):
+        def index2d_to_2dtensor(index2d, batch_size, length):
             indices = tf.reshape(range(0, batch_size, 1), [batch_size, 1])
             concatenated = tf.concat(1, [indices, index2d])
             concat = tf.concat(0, [[batch_size], [length]])
@@ -154,7 +154,7 @@ class ABCNN_TE(object):
         ########################## Snippet CNN ##########################
         with tf.variable_scope("Snippet_CNN"):
             self.W2 = tf.get_variable('CNN_weights', [self.d_2, self.filter_width2 * self.d_1], initializer = tf.random_normal_initializer(0, stddev = self.init_std))
-            self.b2 = tf.get_variable('CNN_biases', [self.d_1], stddev = self.init_std, initializer = tf.random_normal_initializer(0, stddev = self.init_std))
+            self.b2 = tf.get_variable('CNN_biases', [self.d_1], initializer = tf.random_normal_initializer(0, stddev = self.init_std))
 
         snippet_CNN_q = wide_CNN(tf.reshape(r_sq, [self.batch_size, 1, -1]), self.filter_width2, 1, 'Snippet_CNN')
         snippets_CNN_c = []
@@ -178,22 +178,31 @@ class ABCNN_TE(object):
         r_tc = tf.concat(1, r_tc)
         TLR_d = snippet_CNN_d
 
-        tq_attention = tf.batch_matmul(tf.nn.l2_normalize(tf.reshape(r_tq, [self.batch_size, 1, -1]), dim = 2), tf.nn.l2_normalize(SLR_d, dim = 2), adj_y = True)
+        tq_attention = tf.batch_matmul(tf.nn.l2_normalize(tf.reshape(r_tq, [self.batch_size, 1, -1]), dim = 2), tf.nn.l2_normalize(TLR_d, dim = 2), adj_y = True)
         tc_attention = tf.batch_matmul(tf.nn.l2_normalize(r_tc, dim = 2), tf.nn.l2_normalize(TLR_d, dim = 2), adj_y = True)
 
         top_tq = tf.nn.top_k(tf.reshape(tq_attention, [self.batch_size, -1]), k = 3)[1]
         top_tc = tf.nn.top_k(tc_attention, k = 3)[1]
-
-        tq_dense = index2d_to_2dtensor(top_tq, self.batch_size, self.epi_size)
-        tq_dense = tf.reshape(tq_dense, [self.batch_size, self.epi_size, 1])
+        
+        #pdb.set_trace()
+        tq_dense = []
+        for n in range(3): # 3 == top_k2
+            _top_tq = tf.reshape(top_tq[:, n], [self.batch_size, 1])
+            _tq_dense = index2d_to_2dtensor(_top_tq, self.batch_size, self.epi_size+1)
+            _tq_dense = tf.reshape(_tq_dense, [self.batch_size, self.epi_size+1, 1])
+            tq_dense.append(_tq_dense)
+        tq_dense = tf.concat(2, tq_dense)
+        tq_dense = tf.reduce_sum(tq_dense, reduction_indices = 2)
+        #tq_dense = index2d_to_2dtensor(top_tq, self.batch_size, self.epi_size+1)
+        tq_dense = tf.reshape(tq_dense, [self.batch_size, self.epi_size+1, 1])
         masked_tq = tf.mul(TLR_d, tq_dense)
         v_tq = tf.reduce_max(masked_tq, reduction_indices = 1)
 
         v_tc = [] # list of 4 elements
         for n in range(4):
-            tc_dense = index2d_to_2dtensor(top_tc[:, n, :], self.batch_size, self.epi_size)
-            tc_dense = tf.reshape(tc_dense, [self.batch_size, self.epi_size, 1])
-            masked_tc = tf.mul(SLR_d, tc_dense)
+            tc_dense = index2d_to_2dtensor(top_tc[:, n, :], self.batch_size, self.epi_size+1)
+            tc_dense = tf.reshape(tc_dense, [self.batch_size, self.epi_size+1, 1])
+            masked_tc = tf.mul(TLR_d, tc_dense)
             v_tc.append(tf.reshape(tf.reduce_max(masked_tc, reduction_indices = 1), [self.batch_size, 1, -1]))
         v_tc = tf.concat(1, v_tc)
         ################ End of Snippet-Level Representation #############
@@ -201,12 +210,12 @@ class ABCNN_TE(object):
         ####################### Overall Representation ###################
         with tf.variable_scope("Highway"):
             self.W3 = tf.get_variable('weights', [self.d_1, self.d_1], initializer = tf.random_normal_initializer(0, stddev = self.init_std))
-            self.b3 = tf.get_variable('biases', [self.d_1], stddev = self.init_std, initializer = tf.random_normal_initializer(0, stddev = self.init_std))
+            self.b3 = tf.get_variable('biases', [self.d_1], initializer = tf.random_normal_initializer(0, stddev = self.init_std))
         
-        def highway_layer(self, _s, _t, scope):
+        def highway_layer(_s, _t, scope):
             with tf.variable_scope(scope, reuse = True):
-                weights = get_variable('weights')
-                biases = get_variable('biases')
+                weights = tf.get_variable('weights')
+                biases = tf.get_variable('biases')
                 h = tf.sigmoid(tf.matmul(_s, weights) + biases)
                 v_o = tf.mul((1-h), _s) + tf.mul(h, _t)
             return v_o
@@ -219,14 +228,17 @@ class ABCNN_TE(object):
             sc = v_sc[:, n, :]
             tc = v_tc[:, n, :]
             oc = highway_layer(sc, tc, 'Highway')
+            oc = tf.reshape(oc, [self.batch_size, 1, -1])
             v_oc.append(oc)
         v_oc = tf.concat(1, v_oc)
             
+
         r_ic = []
         for n in range(4):
             sc = r_sc[:, n, :]
             tc = r_tc[:, n, :]
             oc = highway_layer(sc, tc, 'Highway')
+            oc = tf.reshape(oc, [self.batch_size, 1, -1])
             r_ic.append(oc)
         r_ic = tf.concat(1, r_ic)
 
@@ -234,55 +246,69 @@ class ABCNN_TE(object):
         attention = tf.batch_matmul(tf.nn.l2_normalize(tf.reshape(v_oq, [self.batch_size, 1, -1]), dim = 2), tf.nn.l2_normalize(r_ic, dim = 2), adj_y = True)
 
         self.preds = tf.nn.top_k(tf.reshape(attention, [self.batch_size, -1]), k = 1)[1]
-            
+                
+           
         cost = self.alpha
-            
         partitions = tf.one_hot(self.input_answers, 4, 1, 0)
-        pos, neg = tf.dynamic_partition(r_ic, partitions, 2)
-        pos = tf.reshape(pos, [self.batch_size, 1, -1])
-        neg = tf.reshape(neg, [self.batch_szie, 3, -1])
+        neg, pos = tf.dynamic_partition(tf.reshape(r_ic, [self.batch_size, 1, 4, self.d_2]), partitions, 2)
+        pos = tf.reshape(pos, [self.batch_size, 1, self.d_2])
+        neg = tf.reshape(neg, [self.batch_size, 3, self.d_2])
 
-        neg_cost = tf.batch_matmul(tf.nn.l2_normalize(tf.reshape(v_oq, [self.batch_size, 1, -1]), dim = 2), tf.nn.l2_normalize(neg, dim = 2), adj_y = True)        
-        pos_cost = tf.batch_matmul(tf.nn.l2_normalize(tf.reshape(v_oq, [self.batch_size, 1, -1]), dim = 2), tf.nn.l2_normalize(pos, dim = 2), adj_y = True)
+        indivi_exam = tf.one_hot(self.negative_idx, 3, 1, 0)
+        _, neg_i = tf.dynamic_partition(tf.reshape(neg, [self.batch_size, 1, 3, self.d_2]), indivi_exam, 2)
+        neg_i = tf.reshape(neg_i, [self.batch_size, 1, self.d_2])
 
-        cost = cost + neg_cost - pos_cost
-        self.loss = tf.max(0, tf.reduce_mean(cost))
+        self.neg_cost = tf.batch_matmul(tf.nn.l2_normalize(tf.reshape(v_oq, [self.batch_size, 1, -1]), dim = 2), tf.nn.l2_normalize(neg_i, dim = 2), adj_y = True)        
+        self.pos_cost = tf.batch_matmul(tf.nn.l2_normalize(tf.reshape(v_oq, [self.batch_size, 1, -1]), dim = 2), tf.nn.l2_normalize(pos, dim = 2), adj_y = True)
 
-        self.opt = tf.train.AdamOptimizer(self.lr).minimize(loss)
+        self.cost = cost + tf.reduce_sum(self.neg_cost, reduction_indices = 2) - tf.reduce_sum(self.pos_cost, reduction_indices = 2)
+        self.loss = tf.maximum(0.0, tf.reduce_mean(self.cost))
+
+        self.loss = self.loss + 0.0065 * (tf.nn.l2_loss(self.W1) + tf.nn.l2_loss(self.W2) + tf.nn.l2_loss(self.W3) + tf.nn.l2_loss(self.b1) + tf.nn.l2_loss(self.b2) + tf.nn.l2_loss(self.b3))
+
+        self.opt = tf.train.AdamOptimizer(self.lr).minimize(self.loss)
         print(" [*] Bulid done.")
-
-    def train():
+    def train(self):
         # init
         total_preds = []
         total_answers = []
+        total_loss = []
             
-        for step, (querys, episodes, candidates, answers) in Progress(enumerate(self.data_iteration(self.train_storys, self.train_questions, self.train_answer_candidates, self.train_answers, True))):
+        for step, (querys, episodes, candidates, answers) in tqdm(enumerate(self.data_iteration(self.train_storys, self.train_questions, self.train_answer_candidates, self.train_answers, True)), desc = "train"):
+            #pdb.set_trace()
             _, loss, preds = self.sess.run([self.opt, self.loss, self.preds], feed_dict = { self.input_querys: querys,
             self.input_episodes: episodes,
             self.input_candidates: candidates,
-            self.input_answers: answers
+            self.input_answers: answers,
+            self.negative_idx: np.random.randint(0, 3, [self.batch_size, 1])
             })
             total_preds.append(preds)
             total_answers.append(answers)
+            total_loss.append(loss)
+        total_loss = sum(total_loss)
         total_preds = np.concatenate(total_preds, axis = 0)
         total_answers = np.concatenate(total_answers, axis = 0)
-        return loss, self.accuracy(total_preds, total_answers)   
+        return total_loss, self.accuracy(total_preds, total_answers)   
 
-    def test():
+    def test(self):
         total_preds = []
         total_answers = []
+        total_loss = []
 
-        for step, (querys, episodes, candidates, answers) in enumerate(self.data_iteration(self.test_storys, self.test_questions, self.test_answer_candidates, self.test_answers, True)):
+        for step, (querys, episodes, candidates, answers) in tqdm(enumerate(self.data_iteration(self.test_storys, self.test_questions, self.test_answer_candidates, self.test_answers, False)), desc = 'test'):
             loss, preds = self.sess.run([self.loss, self.preds], feed_dict = { self.input_querys: querys,
             self.input_episodes: episodes,
             self.input_candidates: candidates,
-            self.input_answers: answers
+            self.input_answers: answers,
+            self.negative_idx: np.random.randint(0, 3, [self.batch_size, 1])
             })
             total_preds.append(preds)
             total_answers.append(answers)
+            total_loss.append(loss)
+        total_loss = sum(total_loss)
         total_preds = np.concatenate(total_preds, axis = 0)
         total_answers = np.concatenate(total_answers, axis = 0)
-        return loss, self.accuracy(total_preds, total_answers)
+        return total_loss, self.accuracy(total_preds, total_answers)
 
     def run(self, task_id):
         self.task_id = task_id
@@ -297,7 +323,7 @@ class ABCNN_TE(object):
         test_loss, test_acc = self.test()
         print("Task: %d, Test loss: %.3f, Test Acc: %.3f" % (task_id, test_loss, test_acc))
 
-    def data_iteration(self, story, questions, answer_candidates, answers, is_train = True):
+    def data_iteration(self, storys, questions, answer_candidates, answers, is_train = True):
         data_range = None
         if is_train:
             random.shuffle(self.train_range)
@@ -316,7 +342,7 @@ class ABCNN_TE(object):
             batch_answers = np.zeros((self.batch_size, 1), np.int32)
 
             for b in range(self.batch_size):
-                episode = np.copy(story[:, :, sbatch[b]])
+                episode = np.copy(storys[:, :, sbatch[b]])
                 query = np.copy(questions[:, qbatch[b], sbatch[b]])
                 candidates = np.copy(answer_candidates[:, :, qbatch[b], sbatch[b]])
                 answer = np.copy(answers[qbatch[b], sbatch[b]])

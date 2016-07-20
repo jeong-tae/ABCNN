@@ -5,14 +5,12 @@ class ABCNN(object):
     def __init__(self, train_storys, test_storys, questions, dictionary):
         self.dictionary     = dictionary
         self.voca_size      = len(dictionary)
-        self.max_epoch      = 100
-        self.mini_batch     = 5
+        self.max_epoch      = 500
         self.max_seq_l      = max(len(train_storys), len(test_storys))
         self.epi_size       = max(train_storys.shape[1], test_storys.shape[1])
         self.train_range    = np.array(range(train_storys.shape[2]))
         self.test_range     = np.array(range(test_storys.shape[2]))
-
-        self.batch_size     = 32
+        self.batch_size     = 15
         self.init_std       = 0.02
 
         

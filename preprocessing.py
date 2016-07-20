@@ -114,7 +114,7 @@ def mctest_load(data_files = None, stop_fpath = None, dictionary = None):
     questions           = np.zeros((100, 4, 500), np.int16)
     question_types      = np.zeros((4, 500), np.int16)
     answer_candidates   = np.zeros((100, 4, 4, 500), np.int16)
-    answers             = np.zeros((4, 500), np.int16)
+    answers             = np.zeros((4, 500), np.int32)
 
     story_idx, max_words, max_sentences = -1, 0, 0
 
@@ -129,6 +129,8 @@ def mctest_load(data_files = None, stop_fpath = None, dictionary = None):
         _story = sentence_split(story_question['story'])
         story_idx += 1
         for i in range(len(_story)):
+            if max_sentences < i:
+                max_sentences = i
             tokens = tokenize(token_mappers, _story[i])
             for j in range(len(tokens)):
                 w = tokens[j]
